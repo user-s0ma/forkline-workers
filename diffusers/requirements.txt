@@ -1,0 +1,17 @@
+runpod==1.12.0
+# Qwen-Image-2.1 (QwenImage21Pipeline) が正式版 (0.40.0) にまだ無いため、main の特定のコミットに固定する
+diffusers @ https://github.com/huggingface/diffusers/archive/e0abab83b5df05de9e7abd788643c1a7c1e42e28.tar.gz
+transformers>=4.57
+accelerate
+# 量子化済みの重みの読み込み。torchao で量子化した safetensors の読み書きに 0.16.0 以上が要る。
+# 0.16.0 の Python の API は torch 2.9 に対応する (ベースのイメージの torch 2.9.1 のまま使える)
+torchao==0.16.0
+safetensors
+sentencepiece
+protobuf
+ftfy
+imageio
+imageio-ffmpeg
+# 音声つき動画の書き出し (diffusers.utils.encode_video)
+av
+huggingface_hub[hf_transfer]
