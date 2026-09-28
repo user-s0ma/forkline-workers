@@ -11,10 +11,12 @@ Forkline の汎用 Diffusers ワーカー (RunPod Serverless)。
 """
 
 import base64
+import faulthandler
 import inspect
 import io
 import os
 import random
+import sys
 import tempfile
 import traceback
 import urllib.request
@@ -30,6 +32,9 @@ from huggingface_hub import model_info
 MODEL_NAME = os.environ["MODEL_NAME"]
 HF_TOKEN = os.environ.get("HF_TOKEN") or None
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+# 生成がこれより長くかかったら、どの処理で止まっているかをこの間隔でログに出す (ワーカーが終わるとログが消え、
+# 止まったまま動かないときは例外も出ないため)
+STACK_DUMP_SECONDS = 180
 
 PIPELINE_ARGS = ["prompt", "negative_prompt", "width", "height", "num_inference_steps", "guidance_scale", "num_frames"]
 # 種類ごとの必須の入力。モジュラー形式では、この入力で動くワークフローを選ぶ
@@ -295,11 +300,14 @@ def handler(job):
         return {"error": LOAD_FAILURE}
     seed = params.get("seed")
     seed = random.randint(0, 2**32 - 1) if seed is None else int(seed)
+    faulthandler.dump_traceback_later(STACK_DUMP_SECONDS, repeat=True, file=sys.stderr)
     try:
         return generate(PIPE, params, seed)
     except Exception as error:
         traceback.print_exc()
         return {"error": describe_failure(error, "generating")}
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 runpod.serverless.start({"handler": handler})
