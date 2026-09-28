@@ -19,6 +19,7 @@ import random
 import sys
 import tempfile
 import traceback
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
@@ -32,6 +33,7 @@ from huggingface_hub import model_info
 MODEL_NAME = os.environ["MODEL_NAME"]
 HF_TOKEN = os.environ.get("HF_TOKEN") or None
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+USER_AGENT = "forkline-diffusers-worker (+https://github.com/user-s0ma/forkline-workers)"
 # 生成がこれより長くかかったら、どの処理で止まっているかをこの間隔でログに出す (ワーカーが終わるとログが消え、
 # 止まったまま動かないときは例外も出ないため)
 STACK_DUMP_SECONDS = 180
@@ -239,8 +241,14 @@ def load_input_image(source: str):
         return _image_from_bytes(data)
     if not source.startswith(("https://", "http://")):
         raise ValueError("image must be a URL or a data URI")
-    with urllib.request.urlopen(source, timeout=30) as response:
-        data = response.read(MAX_IMAGE_BYTES + 1)
+    # 名乗らないと、Cloudflare などが Python の既定の名前 (Python-urllib) を自動の取得として断る
+    request = urllib.request.Request(source, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = response.read(MAX_IMAGE_BYTES + 1)
+    except (urllib.error.URLError, TimeoutError) as error:
+        # 取得できないのは入力 (URL) の問題として返す
+        raise ValueError(f"could not download the image: {error}") from error
     if len(data) > MAX_IMAGE_BYTES:
         raise ValueError("image is too large")
     return _image_from_bytes(data)
