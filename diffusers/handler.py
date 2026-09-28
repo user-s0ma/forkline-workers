@@ -43,6 +43,10 @@ TASK_INPUTS = {
     "text-to-video": {"prompt"},
     "image-to-video": {"prompt", "image"},
 }
+# 種類ごとの任意の入力。モデルが受け付けるときだけ渡す (MiniMax-H3 は文章だけでも、最初の画像つきでも作れる)
+OPTIONAL_INPUTS = {
+    "text-to-video": {"image"},
+}
 
 # ---- リポジトリと実行環境 (起動時に1度だけ決める)
 
@@ -114,11 +118,17 @@ class ModularPipelineAdapter:
         ]
         if not offload:
             load_args["device_map"] = {spec.name: DEVICE for spec in models}
-        workflow = pick_workflow(blocks, TASK_INPUTS[TASK])
-        self.pipe.load_components(workflow=workflow, **load_args)
+        # 種類の入力 (任意の入力を含む) で動くワークフローの部品だけを読む。どのワークフローで作るかは、
+        # 呼び出しのときに渡した入力でパイプラインが選ぶ (画像があれば画像から作るもの)
+        workflows = usable_workflows(blocks, TASK_INPUTS[TASK], OPTIONAL_INPUTS.get(TASK, set()))
+        if workflows is None:
+            needed = blocks.expected_components
+            self.pipe.load_components(**load_args)
+        else:
+            needed = list({spec.name: spec for w in workflows for spec in blocks.get_workflow(w).expected_components}.values())
+            self.pipe.load_components(names=[spec.name for spec in needed], **load_args)
         # 読み込めなかった部品は、エラーをログに出すだけで空のまま残る (生成の途中で分かりにくいエラーになる)。
         # ワークフローが使う部品がそろっているかを、ここで確かめる
-        needed = blocks.get_workflow(workflow).expected_components if workflow else blocks.expected_components
         missing = [spec.name for spec in needed if self.pipe.components.get(spec.name) is None]
         if missing:
             raise RuntimeError(f"Failed to load components of {MODEL_NAME}: {', '.join(missing)}")
@@ -152,23 +162,24 @@ def offload_all_others(hooks, **_):
     return hooks
 
 
-def pick_workflow(blocks, provided: set):
+def usable_workflows(blocks, required: set, optional: set):
     """
-    渡す入力だけで動くワークフローのうち、最も多くの入力を使うものを選ぶ (画像を渡すなら画像から作るもの)。
+    必須の入力で動き、必須と任意の入力のほかは要らないワークフロー (ワークフローが無いパイプラインは None)。
     ワークフローを選ぶ条件はブロックの _workflow_map が宣言している (公開の API は名前の一覧だけ)
     """
     triggers = getattr(blocks, "_workflow_map", None)
     if not triggers:
         return None
-    best, best_size = None, -1
+    provided = required | optional
+    usable = []
     for name, conditions in triggers.items():
         for condition in conditions if isinstance(conditions, tuple) else (conditions,):
-            required = {key for key, needed in condition.items() if needed}
-            if required <= provided and len(required) > best_size:
-                best, best_size = name, len(required)
-    if best is None:
+            needs = {key for key, needed in condition.items() if needed}
+            if needs <= provided and name not in usable:
+                usable.append(name)
+    if not usable:
         raise RuntimeError(f"No workflow of {MODEL_NAME} runs with {sorted(provided)}")
-    return best
+    return usable
 
 
 PIPELINE_CLASS = ModularPipelineAdapter if MODULAR else StandardPipelineAdapter
@@ -251,7 +262,9 @@ def generate(pipe, params: dict, seed: int):
         if params.get(name) is not None and name in pipe.inputs
     }
     kwargs["generator"] = torch.Generator(device=DEVICE).manual_seed(seed)
-    if TASK == "image-to-video":
+    # 画像は、種類の入力 (必須か任意) で、パイプラインが受け付けるときだけ渡す
+    image_task = "image" in TASK_INPUTS[TASK] | OPTIONAL_INPUTS.get(TASK, set())
+    if params.get("image") and image_task and "image" in pipe.inputs:
         kwargs["image"] = load_input_image(params["image"])
 
     if TASK == "text-to-image":
